@@ -193,6 +193,12 @@ function draw_atomic(screen::GLScreen, scene::Scene, @nospecialize(x::Union{Scat
             gl_attributes[:billboard] = map(rot-> isa(rot, Billboard), x.rotations)
             gl_attributes[:distancefield][] == nothing && delete!(gl_attributes, :distancefield)
             gl_attributes[:uv_offset_width][] == Vec4f(0) && delete!(gl_attributes, :uv_offset_width)
+        else
+            if to_value(gl_attributes[:color]) isa AbstractMatrix{<:Colorant}
+                gl_attributes[:image] = gl_attributes[:color]
+                delete!(gl_attributes, :color_map)
+                delete!(gl_attributes, :color_norm)
+            end
         end
 
         positions = handle_view(x[1], gl_attributes)

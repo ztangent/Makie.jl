@@ -91,8 +91,8 @@ function meshparticle(p, s, data)
         color_map = nothing => Texture
         color_norm = nothing
         intensity = nothing
-        image = nothing
-        color = if color_map == nothing
+        image = nothing => Texture
+        color = if color_map === nothing
             default(RGBA{Float32}, s)
         else
             nothing
