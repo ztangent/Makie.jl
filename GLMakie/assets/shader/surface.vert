@@ -81,6 +81,7 @@ uniform vec2 uv_scale;
 flat out uvec2 o_id;
 out vec4 o_color;
 out vec2 o_uv;
+out vec2 o_uv_scale;
 
 flat out vec2            f_scale;
 flat out vec4            f_color;
@@ -107,6 +108,7 @@ void main()
     }
     o_id = uvec2(objectid, index1D+1);
     o_uv = index01 * uv_scale;
+    o_uv_scale = uv_scale;
     vec3 normalvec = {{normal_calc}};
     render(model * vec4(pos, 1), normalvec, view, projection, lightposition);
 }

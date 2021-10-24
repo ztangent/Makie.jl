@@ -81,6 +81,7 @@ function meshparticle(p, s, data)
         scale_x = nothing => TextureBuffer
         scale_y = nothing => TextureBuffer
         scale_z = nothing => TextureBuffer
+        uv_scale = Vec2f(1)
 
         rotation = rot => TextureBuffer
         texturecoordinates = nothing
@@ -100,7 +101,7 @@ function meshparticle(p, s, data)
         vertex_color = Vec4f(1)
         matcap = nothing => Texture
         fetch_pixel = false
-        uv_scale = Vec2f(1)
+        uv_scale = nothing => TextureBuffer
 
         instances = const_lift(length, position)
         shading = true

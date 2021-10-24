@@ -36,6 +36,7 @@ uniform int len;
 flat out uvec2 o_id;
 out vec4 o_color;
 out vec2 o_uv;
+out vec2 o_uv_scale;
 
 {{position_type}} position;
 {{position_x_type}} position_x;
@@ -56,6 +57,8 @@ void rotate(vec4          vectors, int index, inout vec3 vertices, inout vec3 no
 {{scale_x_type}} scale_x;
 {{scale_y_type}} scale_y;
 {{scale_z_type}} scale_z;
+{{uv_scale_type}} uv_scale;
+
 vec4 get_rotation(samplerBuffer rotation, int index){
     return texelFetch(rotation, index);
 }
@@ -130,7 +133,8 @@ vec4 _color(sampler2D color, Nothing intensity, Nothing color_map, Nothing color
 
 void render(vec4 position_world, vec3 normal, mat4 view, mat4 projection, vec3 lightposition);
 
-
+vec2 _scale(vec2 uv, int index){return uv;}
+vec2 _scale(samplerBuffer uv, int index){return texelFetch(uv, index).xy;}
 vec2 get_uv(Nothing x){return vec2(0.0);}
 vec2 get_uv(vec2 x){return vec2(1.0 - x.y, x.x);}
 
@@ -144,7 +148,8 @@ void main(){
     {{position_calc}}
     o_color    = _color(color, intensity, color_map, color_norm, index, len);
     o_color = o_color * to_color(vertex_color);
-    o_uv = get_uv(texturecoordinates);
+    o_uv_scale = _scale(uv_scale, index);
+    o_uv = o_uv_scale * get_uv(texturecoordinates);
     rotate(rotation, index, V, N);
     render(model * vec4(pos + V, 1), N, view, projection, lightposition);
 }
