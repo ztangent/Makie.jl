@@ -3,7 +3,7 @@ function line2segments(points)
     indices = RPR.rpr_int[]
     count = 0
     for i in 1:npoints
-        push!(indices, i -  1)
+        push!(indices, i - 1)
         count += 1
         if count == 4 && !(i == npoints)
             push!(indices, i - 1)
@@ -24,15 +24,17 @@ function to_rpr_object(context, matsys, scene, plot::Makie.Lines)
     indices = line2segments(points)
     radius = [plot.linewidth[] / 1000]
     curve = RPR.Curve(context, points, indices, radius, [Vec2f(0.0)], [length(indices) ÷ 4])
-    material = RPR.MaterialNode(matsys, RPR.RPR_MATERIAL_NODE_DIFFUSE)
-    set!(material, RPR.RPR_MATERIAL_INPUT_COLOR, to_color(plot.color[]))
+    material = extract_material(matsys, plot)
+    material.color = to_color(plot.color[])
     set!(curve, material)
     return curve
 end
 
 function to_rpr_object(context, matsys, scene, plot::Makie.LineSegments)
-    points = decompose(Point3f, to_value(plot[1]))
-    segments = TupleView{2,2}(RPR.rpr_int(0):RPR.rpr_int(length(points) - 1))
+    arg1 = to_value(plot[1])
+    isempty(arg1) && return nothing
+    points = decompose(Point3f, arg1)
+    segments = TupleView{2, 2}(RPR.rpr_int(0):RPR.rpr_int(length(points) - 1))
     indices = RPR.rpr_int[]
 
     for (a, b) in segments
@@ -55,9 +57,11 @@ function to_rpr_object(context, matsys, scene, plot::Makie.LineSegments)
         fill(Float32(plot.linewidth[] / 1000), nsegments)
     end
 
-    curve = RPR.Curve(context, points, indices, radius, Vec2f.(0.0, LinRange(0, 1, nsegments)),
-                      fill(1, nsegments))
-    material = RPR.DiffuseMaterial(matsys)
+    curve = RPR.Curve(
+        context, points, indices, radius, Vec2f.(0.0, LinRange(0, 1, nsegments)),
+        fill(1, nsegments)
+    )
+    material = extract_material(matsys, plot)
     color = to_color(plot.color[])
 
     function set_color!(colorvec)
@@ -73,11 +77,11 @@ function to_rpr_object(context, matsys, scene, plot::Makie.LineSegments)
     if color isa AbstractVector{<:Colorant}
         set_color!(copy(color))
     elseif color isa AbstractVector{<:Number}
-        sampler = Makie.sampler(to_colormap(plot.colormap[]), color; scaling=Makie.Scaling(identity, plot.colorrange[]))
+        sampler = Makie.sampler(to_colormap(plot.colormap[]), color; scaling = Makie.Scaling(identity, plot.colorrange[]))
         set_color!(collect(sampler))
     else
         material.color = to_color(color)
     end
-    set!(curve, material.node)
+    set!(curve, material)
     return curve
 end

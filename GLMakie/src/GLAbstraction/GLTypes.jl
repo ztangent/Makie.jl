@@ -1,15 +1,15 @@
 ############################################################################
-const TOrSignal{T} = Union{Observable{T},T}
+const TOrSignal{T} = Union{Observable{T}, T}
 
-const ArrayOrSignal{T,N} = TOrSignal{X} where X <: AbstractArray{T,N}
-const VecOrSignal{T} = ArrayOrSignal{T,1}
-const MatOrSignal{T} = ArrayOrSignal{T,2}
-const VolumeOrSignal{T} = ArrayOrSignal{T,3}
+const ArrayOrSignal{T, N} = TOrSignal{X} where {X <: AbstractArray{T, N}}
+const VecOrSignal{T} = ArrayOrSignal{T, 1}
+const MatOrSignal{T} = ArrayOrSignal{T, 2}
+const VolumeOrSignal{T} = ArrayOrSignal{T, 3}
 
-const ArrayTypes{T,N} = Union{GPUArray{T,N},ArrayOrSignal{T,N}}
-const VectorTypes{T} = ArrayTypes{T,1}
-const MatTypes{T} = ArrayTypes{T,2}
-const VolumeTypes{T} = ArrayTypes{T,3}
+const ArrayTypes{T, N} = Union{GPUArray{T, N}, ArrayOrSignal{T, N}}
+const VectorTypes{T} = ArrayTypes{T, 1}
+const MatTypes{T} = ArrayTypes{T, 2}
+const VolumeTypes{T} = ArrayTypes{T, 3}
 
 @enum Projection PERSPECTIVE ORTHOGRAPHIC
 @enum MouseButton MOUSE_LEFT MOUSE_MIDDLE MOUSE_RIGHT
@@ -21,19 +21,22 @@ cardinality(x) = length(x)
 cardinality(x::Number) = 1
 cardinality(x::Type{T}) where {T <: Number} = 1
 
-struct Shader
+mutable struct Shader
     name::Symbol
     source::Vector{UInt8}
     typ::GLenum
     id::GLuint
     context::GLContext
-    function Shader(name, source, typ, id)
-        new(name, source, typ, id, current_context())
+
+    function Shader(context, name, source, typ, id)
+        obj = new(Symbol(name), source, typ, id, context)
+        DEBUG[] && finalizer(verify_free, obj)
+        return obj
     end
 end
 
-function Shader(name, source::Vector{UInt8}, typ)
-    compile_shader(source, typ, name)
+function Shader(context, name, source::Vector{UInt8}, typ)
+    return compile_shader(context, source, typ, name)
 end
 
 name(s::Shader) = s.name
@@ -41,30 +44,30 @@ name(s::Shader) = s.name
 import Base: ==
 
 function (==)(a::Shader, b::Shader)
-    a.source == b.source && a.typ == b.typ && a.id == b.id && a.context == b.context
+    return a.source == b.source && a.typ == b.typ && a.id == b.id && a.context == b.context
 end
 
 function Base.hash(s::Shader, h::UInt64)
-    hash((s.source, s.typ, s.id, s.context), h)
+    return hash((s.source, s.typ, s.id, s.context), h)
 end
 
 
 function Base.show(io::IO, shader::Shader)
     println(io, GLENUM(shader.typ).name, " shader: $(shader.name))")
     println(io, "source:")
-    print_with_lines(io, String(shader.source))
+    return print_with_lines(io, String(shader.source))
 end
 
 mutable struct GLProgram
     id::GLuint
     shader::Vector{Shader}
-    nametype::Dict{Symbol,GLenum}
-    uniformloc::Dict{Symbol,Tuple}
+    nametype::Dict{Symbol, GLenum}
+    uniformloc::Dict{Symbol, Tuple}
     context::GLContext
-    function GLProgram(id::GLuint, shader::Vector{Shader}, nametype::Dict{Symbol,GLenum}, uniformloc::Dict{Symbol,Tuple})
-        obj = new(id, shader, nametype, uniformloc, current_context())
-        finalizer(free, obj)
-        obj
+    function GLProgram(id::GLuint, shader::Vector{Shader}, nametype::Dict{Symbol, GLenum}, uniformloc::Dict{Symbol, Tuple}, context = first(shader).context)
+        obj = new(id, shader, nametype, uniformloc, context)
+        DEBUG[] && finalizer(verify_free, obj)
+        return obj
     end
 end
 
@@ -78,6 +81,7 @@ function Base.show(io::IO, p::GLProgram)
     for (name, typ) in p.nametype
         println(io, "   ", name, "::", GLENUM(typ).name)
     end
+    return
 end
 
 ############################################
@@ -93,7 +97,7 @@ struct RenderBuffer
         glGenRenderbuffers(1, id)
         glBindRenderbuffer(GL_RENDERBUFFER, id[1])
         glRenderbufferStorage(GL_RENDERBUFFER, format, dimension...)
-        new(id, format, current_context())
+        return new(id, format, current_context())
     end
 end
 
@@ -102,17 +106,17 @@ function resize!(rb::RenderBuffer, newsize::AbstractArray)
         error("RenderBuffer needs to be 2 dimensional. Dimension found: ", newsize)
     end
     glBindRenderbuffer(GL_RENDERBUFFER, rb.id)
-    glRenderbufferStorage(GL_RENDERBUFFER, rb.format, newsize...)
+    return glRenderbufferStorage(GL_RENDERBUFFER, rb.format, newsize...)
 end
 
 struct FrameBuffer{T}
     id::GLuint
     attachments::Vector{Any}
     context::GLContext
-    function FrameBuffer{T}(dimensions::Observable) where T
+    function FrameBuffer{T}(dimensions::Observable) where {T}
         fb = glGenFramebuffers()
         glBindFramebuffer(GL_FRAMEBUFFER, fb)
-        new(id, attachments, current_context())
+        return new(id, attachments, current_context())
     end
 end
 
@@ -123,36 +127,37 @@ function resize!(fbo::FrameBuffer, newsize::AbstractArray)
     for elem in fbo.attachments
         resize!(elem)
     end
+    return
 end
 
 ########################################################################################
 # OpenGL Arrays
 
-const GLArrayEltypes = Union{StaticVector,Real,Colorant}
+const GLArrayEltypes = Union{StaticVector, Quaternion, Real, Colorant}
 """
 Transform julia datatypes to opengl enum type
 """
 julia2glenum(x::Type{T}) where {T <: FixedPoint} = julia2glenum(FixedPointNumbers.rawtype(x))
-julia2glenum(x::Union{Type{T},T}) where {T <: Union{StaticVector,Colorant}} = julia2glenum(eltype(x))
-julia2glenum(::Type{OffsetInteger{O,T}}) where {O,T} = julia2glenum(T)
-julia2glenum(::Type{GLubyte})  = GL_UNSIGNED_BYTE
-julia2glenum(::Type{GLbyte})   = GL_BYTE
-julia2glenum(::Type{GLuint})   = GL_UNSIGNED_INT
+julia2glenum(x::Union{Type{T}, T}) where {T <: Union{StaticVector, Quaternion, Colorant}} = julia2glenum(eltype(x))
+julia2glenum(::Type{OffsetInteger{O, T}}) where {O, T} = julia2glenum(T)
+julia2glenum(::Type{GLubyte}) = GL_UNSIGNED_BYTE
+julia2glenum(::Type{GLbyte}) = GL_BYTE
+julia2glenum(::Type{GLuint}) = GL_UNSIGNED_INT
 julia2glenum(::Type{GLushort}) = GL_UNSIGNED_SHORT
-julia2glenum(::Type{GLshort})  = GL_SHORT
-julia2glenum(::Type{GLint})    = GL_INT
-julia2glenum(::Type{GLfloat})  = GL_FLOAT
+julia2glenum(::Type{GLshort}) = GL_SHORT
+julia2glenum(::Type{GLint}) = GL_INT
+julia2glenum(::Type{GLfloat}) = GL_FLOAT
 julia2glenum(::Type{GLdouble}) = GL_DOUBLE
-julia2glenum(::Type{Float16})  = GL_HALF_FLOAT
+julia2glenum(::Type{Float16}) = GL_HALF_FLOAT
 
 struct DepthStencil_24_8 <: Real
-    data::NTuple{4,UInt8}
+    data::NTuple{4, UInt8}
 end
 
-Base.eltype(::Type{<: DepthStencil_24_8}) = DepthStencil_24_8
+Base.eltype(::Type{<:DepthStencil_24_8}) = DepthStencil_24_8
 julia2glenum(x::Type{DepthStencil_24_8}) = GL_UNSIGNED_INT_24_8
 
-function julia2glenum(::Type{T}) where T
+function julia2glenum(::Type{T}) where {T}
     error("Type: $T not supported as opengl number datatype")
 end
 
@@ -171,33 +176,26 @@ mutable struct GLVertexArray{T}
     program::GLProgram
     id::GLuint
     bufferlength::Int
-    buffers::Dict{String,GLBuffer}
+    buffers::Dict{String, GLBuffer}
     indices::T
     context::GLContext
-    requires_update::Observable{Bool}
-
-    function GLVertexArray{T}(program, id, bufferlength, buffers, indices) where T
-        va = new(program, id, bufferlength, buffers, indices, current_context(), true)
-        if indices isa GLBuffer
-            on(indices.requires_update) do _ # only triggers true anyway
-                va.requires_update[] = true
-            end
-        end
-        for (name, buffer) in buffers
-            on(buffer.requires_update) do _ # only triggers true anyway
-                va.requires_update[] = true
-            end
-        end
-
+    function GLVertexArray{T}(program, id, bufferlength, buffers, indices) where {T}
+        va = new(program, id, bufferlength, buffers, indices, program.context)
         return va
     end
 end
 
 """
-returns the length of the vertex array.
-This is amount of primitives stored in the vertex array, needed for `glDrawArrays`
+    length(vao::GLVertexArray)
+
+Returns the length of the vertex array. More specifically this returns the minimum
+of the lengths of each vertex buffer, i.e. the number of addressable vertices. If
+no vertex buffers are present -1 is returned.
 """
-length(vao::GLVertexArray) = length(first(vao.buffers)[2]) # all buffers have same length, so first should do!
+function length(vao::GLVertexArray)
+    isempty(vao.buffers) && return -1
+    return mapreduce(length, min, values(vao.buffers))
+end
 
 GLVertexArray(vao::GLVertexArray) = GLVertexArray(vao.buffers, vao.program)
 
@@ -205,11 +203,11 @@ function GLVertexArray(bufferdict::Dict, program::GLProgram)
     # get the size of the first array, to assert later, that all have the same size
     indexes = -1
     len = -1
-    ShaderAbstractions.switch_context!(program.context)
+    gl_switch_context!(program.context)
     id = glGenVertexArrays()
     glBindVertexArray(id)
     lenbuffer = 0
-    buffers = Dict{String,GLBuffer}()
+    buffers = Dict{String, GLBuffer}()
     for (name, buffer) in bufferdict
         if isa(buffer, GLBuffer) && buffer.buffertype == GL_ELEMENT_ARRAY_BUFFER
             bind(buffer)
@@ -232,7 +230,7 @@ function GLVertexArray(bufferdict::Dict, program::GLProgram)
                 end
                 error(
                     "Buffer $attribute does not have the same length as the other buffers." *
-                    bufferlengths
+                        bufferlengths
                 )
             end
             bind(buffer)
@@ -256,11 +254,12 @@ function GLVertexArray(bufferdict::Dict, program::GLProgram)
         indexes = len
     end
     obj = GLVertexArray{typeof(indexes)}(program, id, len, buffers, indexes)
-    finalizer(free, obj)
+    DEBUG[] && finalizer(verify_free, obj)
     return obj
 end
 using ShaderAbstractions: Buffer
-function GLVertexArray(program::GLProgram, buffers::Buffer, triangles::AbstractVector{<: GLTriangleFace})
+function GLVertexArray(program::GLProgram, buffers::Buffer, triangles::AbstractVector{<:GLTriangleFace})
+    gl_switch_context!(program.context)
     # get the size of the first array, to assert later, that all have the same size
     id = glGenVertexArrays()
     glBindVertexArray(id)
@@ -268,7 +267,7 @@ function GLVertexArray(program::GLProgram, buffers::Buffer, triangles::AbstractV
         array = getproperty(buffers, property_name)
         attribute = string(property_name)
         # TODO: use glVertexAttribDivisor to allow multiples of the longest buffer
-        buffer = GLBuffer(array)
+        buffer = GLBuffer(program.context, array)
         bind(buffer)
         attribLocation = get_attribute_location(program.id, attribute)
         if attribLocation == -1
@@ -281,7 +280,7 @@ function GLVertexArray(program::GLProgram, buffers::Buffer, triangles::AbstractV
     glBindVertexArray(0)
     indices = indexbuffer(triangles)
     obj = GLVertexArray{typeof(indexes)}(program, id, len, buffers, indices)
-    finalizer(free, obj)
+    DEBUG[] && finalizer(verify_free, obj)
     return obj
 end
 
@@ -289,17 +288,20 @@ function bind(va::GLVertexArray)
     if va.id == 0
         error("Binding freed VertexArray")
     end
-    glBindVertexArray(va.id)
+    return glBindVertexArray(va.id)
 end
 
-
-function Base.show(io::IO, vao::GLVertexArray)
-    show(io, vao.program)
+Base.show(io::IO, vao::GLVertexArray) = print(io, "GLVertexArray $(vao.id)")
+function Base.show(io::IO, ::MIME"text/plain", vao::GLVertexArray)
+    # show(io, vao.program)
     println(io, "GLVertexArray $(vao.id):")
-    print(io, "GLVertexArray $(vao.id) buffers: ")
-    writemime(io, MIME("text/plain"), vao.buffers)
-    println(io, "\nGLVertexArray $(vao.id) indices: ", vao.indices)
+    print(io, "buffers: ")
+    show(io, MIME("text/plain"), vao.buffers)
+    return _print_indices(io, vao.indices)
 end
+_print_indices(io::IO, n::Integer) = print(io, "\nindices: ", Int64(n))
+_print_indices(io::IO, is::AbstractVector{<:Integer}) = print(io, "\nindices: ", Int64.(is))
+_print_indices(io::IO, fs) = print(io, "\nfaces: ", fs)
 
 ##################################################################################
 
@@ -312,22 +314,21 @@ end
 
 mutable struct RenderObject{Pre}
     context # OpenGL context
-    uniforms::Dict{Symbol,Any}
+    uniforms::Dict{Symbol, Any}
     observables::Vector{Observable} # for clean up
     vertexarray::GLVertexArray
     prerenderfunction::Pre
     postrenderfunction
     id::UInt32
-    requires_update::Bool
     visible::Bool
 
     function RenderObject{Pre}(
             context,
-            uniforms::Dict{Symbol,Any}, observables::Vector{Observable},
+            uniforms::Dict{Symbol, Any}, observables::Vector{Observable},
             vertexarray::GLVertexArray,
             prerenderfunctions, postrenderfunctions,
-            visible, track_updates = true
-        ) where Pre
+            visible
+        ) where {Pre}
         fxaa = Bool(to_value(get!(uniforms, :fxaa, true)))
         RENDER_OBJECT_ID_COUNTER[] += one(UInt32)
         # Store fxaa in ID, so we can access it in the shader to create a mask
@@ -340,115 +341,99 @@ mutable struct RenderObject{Pre}
             context,
             uniforms, observables, vertexarray,
             prerenderfunctions, postrenderfunctions,
-            id, true, visible[]
+            id, to_value(visible)
         )
-
-        if track_updates
-            # visible changes should always trigger updates so that plots
-            # actually become invisible when visible is changed.
-            # Other uniforms and buffers don't need to trigger updates when
-            # visible = false
+        if visible isa Observable # old way, set in GLMakie now
+            push!(observables, visible)
             on(visible) do visible
                 robj.visible = visible
-                robj.requires_update = true
-            end
-
-            function request_update(_::Any)
-                if robj.visible
-                    robj.requires_update = true
-                end
                 return
             end
-
-            # gather update requests for polling in renderloop
-            for uniform in values(uniforms)
-                if uniform isa Observable
-                    on(request_update, uniform)
-                elseif uniform isa GPUArray
-                    on(request_update, uniform.requires_update)
-                end
-            end
-            on(request_update, vertexarray.requires_update)
-        else
-            on(visible) do visible
-                robj.visible = visible
-            end
-
-            # remove tracking from GPUArrays
-            for uniform in values(uniforms)
-                if uniform isa GPUArray
-                    foreach(off, uniform.requires_update.inputs)
-                    empty!(uniform.requires_update.inputs)
-                end
-            end
-            for buffer in vertexarray.buffers
-                if buffer isa GPUArray
-                    foreach(off, buffer.requires_update.inputs)
-                    empty!(buffer.requires_update.inputs)
-                end
-            end
-            foreach(off, vertexarray.requires_update.inputs)
-            empty!(vertexarray.requires_update.inputs)
         end
-
         return robj
     end
 end
 
 function RenderObject(
-        data::Dict{Symbol,Any}, program,
+        data::Dict{Symbol, Any}, program,
         pre::Pre, post,
-        context=current_context()
-    ) where Pre
+        context
+    ) where {Pre}
+    gl_switch_context!(context)
+    require_context(context)
 
-    switch_context!(context)
-
-    # This is a lazy workaround for disabling updates of `requires_update` when
-    # not rendering on demand. A cleaner implementation should probably go
-    # through @gen_defaults! and adjust constructors instead.
-    track_updates = to_value(pop!(data, :track_updates, true))
-
+    # Explicit conversion targets for gl_convert
     targets = get(data, :gl_convert_targets, Dict())
     delete!(data, :gl_convert_targets)
-    passthrough = Dict{Symbol,Any}() # we also save a few non opengl related values in data
+
+    # Not handled as uniform
+    visible = pop!(data, :visible, Observable(true))
+
+    # for clean up on deletion
     observables = Observable[]
 
-    for (k, v) in data # convert everything to OpenGL compatible types
-        v isa Observable && push!(observables, v) # save for clean up
+    # Overwriting data with break direct iteration over it
+    _keys = collect(keys(data))
+    for k in _keys
+        v = data[k]
+        v isa Observable && push!(observables, v)
+
         if haskey(targets, k)
-            # glconvert is designed to just convert everything to a fitting opengl datatype, but sometimes exceptions are needed
-            # e.g. Texture{T,1} and GLBuffer{T} are both usable as an native conversion canditate for a Julia's Array{T, 1} type.
-            # but in some cases we want a Texture, sometimes a GLBuffer or TextureBuffer
-            data[k] = gl_convert(targets[k], v)
+            # glconvert is designed to convert everything to a fitting opengl datatype, but sometimes
+            # the conversion is not unique. (E.g. Array -> Texture, TextureBuffer, GLBuffer, ...)
+            # In these cases an explicit conversion target is required
+            data[k] = gl_convert(context, targets[k], v)
         else
             k in (:indices, :visible, :ssao, :label, :cycle) && continue
-            # structs are treated differently, since they have to be composed into their fields
+
+            # structs are decomposed into fields
+            #     $k.$fieldname -> v.$fieldname
             if isa_gl_struct(v)
-                merge!(data, gl_convert_struct(v, k))
-            elseif applicable(gl_convert, v) # if can't be converted to an OpenGL datatype,
+                merge!(data, gl_convert_struct(context, v, k))
+                delete!(data, k)
+
+                # try direct conversion
+            elseif applicable(gl_convert, context, v)
                 try
-                    data[k] = gl_convert(v)
+                    data[k] = gl_convert(context, v)
                 catch e
-                    @warn("Can't convert $(typeof(v)) to opengl, for attribute $(k)")
+                    @error "gl_convert for key `$k` failed"
                     rethrow(e)
                 end
-            else # put it in passthrough
-                delete!(data, k)
-                passthrough[k] = v
+
+                # Otherwise just let the value pass through
+                # TODO: Is this ok/ever not filtered?
+            else
+                @debug "Passed on $k -> $(typeof(v)) without conversion."
             end
         end
     end
+
     buffers = filter(((key, value),) -> isa(value, GLBuffer) || key === :indices, data)
-    uniforms = filter(((key, value),) -> !isa(value, GLBuffer) && key !== :indices, data)
-    merge!(data, passthrough) # in the end, we insert back the non opengl data, to keep things simple
-    program = gl_convert(to_value(program), data) # "compile" lazyshader
+    program = gl_convert(context, to_value(program), data) # "compile" lazyshader
     vertexarray = GLVertexArray(Dict(buffers), program)
-    visible = pop!(uniforms, :visible, Observable(true))
-    # remove all uniforms not occuring in shader
+    require_context(context)
+
+    # Validate context of things in RenderObject
+    if DEBUG[]
+        require_context(program.context, context)
+        require_context(vertexarray.context, context)
+        for v in values(data)
+            if v isa TextureBuffer
+                require_context(v.buffer.context, context)
+                require_context(v.texture.context, context)
+            elseif v isa GPUArray
+                require_context(v.context, context)
+            end
+        end
+    end
+
+    # remove all uniforms not occurring in shader
     # ssao, instances transparency are special for rendering passes. TODO do this more cleanly
-    special = Set([:ssao, :transparency, :instances, :fxaa])
+    special = Set([:ssao, :transparency, :instances, :fxaa, :num_clip_planes])
     for k in setdiff(keys(data), keys(program.nametype))
         if !(k in special)
+            !haskey(buffers, k) && (data[k] isa GPUArray) && free(data[k])
             delete!(data, k)
         end
     end
@@ -460,11 +445,12 @@ function RenderObject(
         vertexarray,
         pre,
         post,
-        visible,
-        track_updates
+        visible
     )
+
     # automatically integrate object ID, will be discarded if shader doesn't use it
     robj[:objectid] = robj.id
+
     return robj
 end
 
@@ -472,69 +458,52 @@ include("GLRenderObject.jl")
 
 ####################################################################################
 # freeing
-function free(x)
-    try
+
+# Note: can be called from scene finalizer, must not error or print unless to Core.stdout
+function free(x::T) where {T}
+    # don't free if already freed (this should only be set by unsafe_free)
+    clean_up_observables(x)
+    x.id == 0 && return
+
+    # OpenGL has the annoying habit of reusing id's when creating a new context
+    # We need to make sure to only free the current one
+    if context_alive(x.context) && is_context_active(x.context)
         unsafe_free(x)
-    catch e
-        isa(e, ContextNotAvailable) && return # if context got destroyed no need to worry!
-        rethrow(e)
+    end
+    x.id = 0
+    return
+end
+
+function clean_up_observables(x::GLVertexArray)
+    for (_, buffer) in x.buffers
+        clean_up_observables(buffer)
+    end
+    return if x.indices isa GPUArray
+        clean_up_observables(x.indices)
     end
 end
 
-function clean_up_observables(x::T) where T
-    if hasfield(T, :observers)
+function clean_up_observables(x::T) where {T}
+    return if hasfield(T, :observers)
         foreach(off, x.observers)
         empty!(x.observers)
     end
-    Observables.clear(x.requires_update)
 end
 
-# OpenGL has the annoying habit of reusing id's when creating a new context
-# We need to make sure to only free the current one
-function unsafe_free(x::GLProgram)
-    x.id == 0 && return
-    GLAbstraction.context_alive(x.context) || return
-    GLAbstraction.switch_context!(x.context)
-    glDeleteProgram(x.id)
-    return
-end
-
-function unsafe_free(x::GLBuffer)
-    # don't free if already freed
-    x.id == 0 && return
-    clean_up_observables(x)
-    # don't free from other context
-    GLAbstraction.context_alive(x.context) || return
-    GLAbstraction.switch_context!(x.context)
-    id = Ref(x.id)
-    glDeleteBuffers(1, id)
-    x.id = 0
-    return
-end
-
-function unsafe_free(x::Texture)
-    x.id == 0 && return
-    clean_up_observables(x)
-    GLAbstraction.context_alive(x.context) || return
-    GLAbstraction.switch_context!(x.context)
-    id = Ref(x.id)
-    glDeleteTextures(x.id)
-    x.id = 0
-    return
-end
+unsafe_free(x::GLProgram) = glDeleteProgram(x.id)
+unsafe_free(x::Shader) = glDeleteShader(x.id)
+unsafe_free(x::GLBuffer) = glDeleteBuffers(x.id)
+unsafe_free(x::Texture) = glDeleteTextures(x.id)
 
 function unsafe_free(x::GLVertexArray)
-    x.id == 0 && return
-    GLAbstraction.context_alive(x.context) || return
-    GLAbstraction.switch_context!(x.context)
     for (key, buffer) in x.buffers
-        free(buffer)
+        unsafe_free(buffer)
+        buffer.id = 0
     end
     if x.indices isa GPUArray
-        free(x.indices)
+        unsafe_free(x.indices)
+        x.indices.id = 0
     end
-    id = Ref(x.id)
-    glDeleteVertexArrays(1, id)
-    x.id = 0
+    glDeleteVertexArrays(x.id)
     return
 end

@@ -5,8 +5,8 @@ GLMakie.activate!()
 
 function copy_scene_settings(s)
     cc = cameracontrols(s)
-    (
-        px_area = s.px_area[],
+    return (
+        viewport = s.viewport[],
         eyeposition = cc.eyeposition[],
         lookat = cc.lookat[],
         upvector = cc.upvector[],
@@ -30,15 +30,17 @@ function apply_camera_settings!(s, settings)
     cc.pulser[] = settings.pulser
     Makie.update!(s)
     Makie.update!(s)
-    resize!(s, settings.px_area)
+    resize!(s, settings.viewport)
     return
 end
 
 ##
 s = Scene(camera = cam3d!, show_axis = false, center = false)
 r = range(-2, 15, length = 60)
-wireframe!(s, r, r, ((x, y) -> sin(x) * cos(y) * max((x - 2) / 7, 0)).(r, (r)'),
-    transparency = true)
+wireframe!(
+    s, r, r, ((x, y) -> sin(x) * cos(y) * max((x - 2) / 7, 0)).(r, (r)'),
+    transparency = true
+)
 
 apply_camera_settings!(s, settings)
 
@@ -48,7 +50,6 @@ s
 
 
 settings = copy_scene_settings(s)
-
 
 
 ##

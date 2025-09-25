@@ -1,8 +1,8 @@
 using Base.Docs: doc
 
-@enum RenderType SVG IMAGE PDF EPS
+@enum RenderType SVG IMAGE PDF EPS HTML
 
-Base.convert(::Type{RenderType}, ::MIME{SYM}) where SYM = mime_to_rendertype(SYM)
+Base.convert(::Type{RenderType}, ::MIME{SYM}) where {SYM} = mime_to_rendertype(SYM)
 function Base.convert(::Type{RenderType}, type::String)
     if type == "png"
         return IMAGE
@@ -12,6 +12,8 @@ function Base.convert(::Type{RenderType}, type::String)
         return PDF
     elseif type == "eps"
         return EPS
+    elseif type in ("html", "text/html", "application/vnd.webio.application+html", "application/prs.juno.plotpane+html", "juliavscode/html")
+        return HTML
     else
         error("Unsupported cairo render type: $type")
     end
@@ -22,6 +24,7 @@ function to_mime(type::RenderType)
     type == SVG && return MIME("image/svg+xml")
     type == PDF && return MIME("application/pdf")
     type == EPS && return MIME("application/postscript")
+    type == HTML && return MIME("text/html")
     return MIME("image/png")
 end
 
@@ -35,17 +38,19 @@ function mime_to_rendertype(mime::Symbol)::RenderType
         return PDF
     elseif mime == Symbol("application/postscript")
         return EPS
+    elseif mime in (Symbol("text/html"), Symbol("text/html"), Symbol("application/vnd.webio.application+html"), Symbol("application/prs.juno.plotpane+html"), Symbol("juliavscode/html"))
+        return HTML
     else
         error("Unsupported mime: $mime")
     end
 end
 
-function surface_from_output_type(mime::MIME{M}, io, w, h) where M
-    surface_from_output_type(M, io, w, h)
+function surface_from_output_type(mime::MIME{M}, io, w, h) where {M}
+    return surface_from_output_type(M, io, w, h)
 end
 
 function surface_from_output_type(mime::Symbol, io, w, h)
-    surface_from_output_type(mime_to_rendertype(mime), io, w, h)
+    return surface_from_output_type(mime_to_rendertype(mime), io, w, h)
 end
 
 function surface_from_output_type(type::RenderType, io, w, h)
@@ -55,12 +60,21 @@ function surface_from_output_type(type::RenderType, io, w, h)
         return Cairo.CairoPDFSurface(io, w, h)
     elseif type === EPS
         return Cairo.CairoEPSSurface(io, w, h)
-    elseif type === IMAGE
+    elseif type === IMAGE || type === HTML
         img = fill(ARGB32(0, 0, 0, 0), w, h)
         return Cairo.CairoImageSurface(img)
     else
         error("No available Cairo surface for mode $type")
     end
+end
+
+@enum PDFVersion PDFv14 PDFv15 PDFv16 PDFv17
+function pdfversion(version::AbstractString)
+    version == "1.4" && return PDFv14
+    version == "1.5" && return PDFv15
+    version == "1.6" && return PDFv16
+    version == "1.7" && return PDFv17
+    throw(ArgumentError("PDF version must be one of '1.4', '1.5', '1.6', '1.7' (received '$version')"))
 end
 
 """
@@ -76,10 +90,11 @@ end
 to_cairo_antialias(aa::Int) = aa
 
 """
-* `px_per_unit = 1.0`: see [figure size docs](https://docs.makie.org/v0.17.13/documentation/figure_size/index.html).
-* `pt_per_unit = 0.75`: see [figure size docs](https://docs.makie.org/v0.17.13/documentation/figure_size/index.html).
+* `px_per_unit = 2.0`
+* `pt_per_unit = 0.75`
 * `antialias::Union{Symbol, Int} = :best`: antialias modus Cairo uses to draw. Applicable options: `[:best => Cairo.ANTIALIAS_BEST, :good => Cairo.ANTIALIAS_GOOD, :subpixel => Cairo.ANTIALIAS_SUBPIXEL, :none => Cairo.ANTIALIAS_NONE]`.
 * `visible::Bool`: if true, a browser/image viewer will open to display rendered output.
+* `pdf_version::String = nothing`: the version of output PDFs. Applicable options are `"1.4"`, `"1.5"`, `"1.6"`, `"1.7"`, or `nothing`, which leaves the PDF version unrestricted.
 """
 struct ScreenConfig
     px_per_unit::Float64
@@ -87,18 +102,32 @@ struct ScreenConfig
     antialias::Symbol
     visible::Bool
     start_renderloop::Bool # Only used to satisfy the interface for record using `Screen(...; start_renderloop=false)` for GLMakie
+    pdf_version::Union{Nothing, PDFVersion}
+
+    function ScreenConfig(
+            px_per_unit::Real, pt_per_unit::Real,
+            antialias::Symbol, visible::Bool, start_renderloop::Bool,
+            pdf_version::Union{Nothing, AbstractString}
+        )
+        v = isnothing(pdf_version) ? nothing : pdfversion(pdf_version)
+        return new(px_per_unit, pt_per_unit, antialias, visible, start_renderloop, v)
+    end
 end
 
+css_px_per_unit(pt_per_unit) = pt_per_unit / 0.75
+
 function device_scaling_factor(rendertype, sc::ScreenConfig)
-    isv = is_vector_backend(convert(RenderType, rendertype))
-    return isv ? sc.pt_per_unit : sc.px_per_unit
+    rt = convert(RenderType, rendertype)
+    isv = is_vector_backend(rt)
+    # from version 1.18 on, Cairo saves SVGs without the pt unit specified, so they are actually in CSS px now
+    return rt === SVG ? css_px_per_unit(sc.pt_per_unit) : isv ? sc.pt_per_unit : sc.px_per_unit
 end
 
 function device_scaling_factor(surface::Cairo.CairoSurface, sc::ScreenConfig)
-    return is_vector_backend(surface) ? sc.pt_per_unit : sc.px_per_unit
+    return device_scaling_factor(get_render_type(surface), sc)
 end
 
-const LAST_INLINE = Ref(true)
+const LAST_INLINE = Ref{Union{Makie.Automatic, Bool}}(Makie.automatic)
 
 """
     CairoMakie.activate!(; screen_config...)
@@ -110,7 +139,7 @@ Note, that the `screen_config` can also be set permanently via `Makie.set_theme!
 
 $(Base.doc(ScreenConfig))
 """
-function activate!(; inline=LAST_INLINE[], type="png", screen_config...)
+function activate!(; inline = LAST_INLINE[], type = "png", screen_config...)
     Makie.inline!(inline)
     LAST_INLINE[] = inline
     Makie.set_screen_config!(CairoMakie, screen_config)
@@ -120,9 +149,7 @@ function activate!(; inline=LAST_INLINE[], type="png", screen_config...)
         # So, if we want to prefer the png mime, we disable the mimes that are usually higher up in the stack.
         disable_mime!("svg", "pdf")
     elseif type == "svg"
-        # SVG is usually pretty high up the priority, so we can just enable all mimes
-        # If we implement html display for CairoMakie, we might need to disable that.
-        disable_mime!()
+        disable_mime!("text/html", "application/vnd.webio.application+html", "application/prs.juno.plotpane+html", "juliavscode/html")
     else
         enable_only_mime!(type)
     end
@@ -150,6 +177,31 @@ mutable struct Screen{SurfaceRenderType} <: Makie.MakieScreen
     antialias::Int # cairo_antialias_t
     visible::Bool
     config::ScreenConfig
+
+    function Screen()
+        return new{IMAGE}()
+    end
+    function Screen{SurfaceRenderType}(
+            scene::Scene,
+            surface::Cairo.CairoSurface,
+            context::Cairo.CairoContext,
+            device_scaling_factor::Float64,
+            antialias::Int,
+            visible::Bool,
+            config::ScreenConfig
+        ) where {SurfaceRenderType}
+
+        return new{SurfaceRenderType}(
+            scene,
+            surface,
+            context,
+            device_scaling_factor,
+            antialias,
+            visible,
+            config,
+        )
+    end
+
 end
 
 function Base.empty!(screen::Screen)
@@ -161,24 +213,29 @@ function Base.empty!(screen::Screen)
     Cairo.set_operator(ctx, Cairo.OPERATOR_CLEAR)
     Cairo.rectangle(ctx, 0, 0, size(screen)...)
     Cairo.paint_with_alpha(ctx, 1.0)
-    Cairo.restore(ctx)
+    return Cairo.restore(ctx)
 end
 
 Base.close(screen::Screen) = empty!(screen)
 
 function destroy!(screen::Screen)
+    isdefined(screen, :surface) || return
     Cairo.destroy(screen.surface)
-    Cairo.destroy(screen.context)
+    return Cairo.destroy(screen.context)
 end
 
 function Base.isopen(screen::Screen)
     return !(screen.surface.ptr == C_NULL || screen.context.ptr == C_NULL)
 end
 
-Base.size(screen::Screen) = round.(Int, (screen.surface.width, screen.surface.height))
+function Base.size(screen::Screen)
+    isdefined(screen, :surface) || return (0, 0)
+    return round.(Int, (screen.surface.width, screen.surface.height))
+end
 # we render the scene directly, since we have
 # no screen dependent state like in e.g. opengl
 Base.insert!(screen::Screen, scene::Scene, plot) = nothing
+
 function Base.delete!(screen::Screen, scene::Scene, plot::AbstractPlot)
     # Currently, we rerender every time, so nothing needs
     # to happen here.  However, in the event that changes,
@@ -186,8 +243,8 @@ function Base.delete!(screen::Screen, scene::Scene, plot::AbstractPlot)
     # do something here.
 end
 
-function Base.show(io::IO, ::MIME"text/plain", screen::Screen{S}) where S
-    println(io, "CairoMakie.Screen{$S}")
+function Base.show(io::IO, ::MIME"text/plain", screen::Screen{S}) where {S}
+    return println(io, "CairoMakie.Screen{$S}")
 end
 
 function path_to_type(path)
@@ -210,6 +267,11 @@ function apply_config!(screen::Screen, config::ScreenConfig)
     aa = to_cairo_antialias(config.antialias)
     Cairo.set_antialias(context, aa)
     set_miter_limit(context, 2.0)
+
+    if get_render_type(surface) === PDF && !isnothing(config.pdf_version)
+        restrict_pdf_version!(surface, Int(config.pdf_version))
+    end
+
     screen.antialias = aa
     screen.device_scaling_factor = dsf
     screen.config = config
@@ -222,7 +284,8 @@ function scaled_scene_resolution(typ::RenderType, config::ScreenConfig, scene::S
 end
 
 function Makie.apply_screen_config!(
-        screen::Screen{SCREEN_RT}, config::ScreenConfig, scene::Scene, io::Union{Nothing, IO}, m::MIME{SYM}) where {SYM, SCREEN_RT}
+        screen::Screen{SCREEN_RT}, config::ScreenConfig, scene::Scene, io::Union{Nothing, IO}, m::MIME{SYM}
+    ) where {SYM, SCREEN_RT}
     # the surface size is the scene size scaled by the device scaling factor
     new_rendertype = mime_to_rendertype(SYM)
     # we need to re-create the screen if the rendertype changes, or for all vector backends
@@ -236,16 +299,21 @@ function Makie.apply_screen_config!(
         destroy!(old_screen)
     end
     apply_config!(screen, config)
+    screen.scene = scene
     return screen
 end
 
 function Makie.apply_screen_config!(screen::Screen, config::ScreenConfig, scene::Scene, args...)
     # No mime as an argument implies we want an image based surface
-    Makie.apply_screen_config!(screen, config, scene, nothing, MIME"image/png"())
+    return Makie.apply_screen_config!(screen, config, scene, nothing, MIME"image/png"())
+end
+
+function Makie.px_per_unit(s::Screen)::Float64
+    return s.config.px_per_unit
 end
 
 function Screen(scene::Scene; screen_config...)
-    config = Makie.merge_screen_config(ScreenConfig, screen_config)
+    config = Makie.merge_screen_config(ScreenConfig, Dict{Symbol, Any}(screen_config))
     return Screen(scene, config)
 end
 
@@ -282,6 +350,11 @@ function Screen(scene::Scene, config::ScreenConfig, surface::Cairo.CairoSurface)
     aa = to_cairo_antialias(config.antialias)
     Cairo.set_antialias(ctx, aa)
     set_miter_limit(ctx, 2.0)
+
+    if get_render_type(surface) === PDF && !isnothing(config.pdf_version)
+        restrict_pdf_version!(surface, Int(config.pdf_version))
+    end
+
     return Screen{get_render_type(surface)}(scene, surface, ctx, dsf, aa, config.visible, config)
 end
 
@@ -303,6 +376,7 @@ function Makie.colorbuffer(screen::Screen)
 end
 
 function Makie.colorbuffer(screen::Screen{IMAGE})
+    Makie.push_screen!(screen.scene, screen)
     empty!(screen)
     cairo_draw(screen, screen.scene)
     return PermutedDimsArray(screen.surface.data, (2, 1))
@@ -311,3 +385,6 @@ end
 is_vector_backend(ctx::Cairo.CairoContext) = is_vector_backend(ctx.surface)
 is_vector_backend(surf::Cairo.CairoSurface) = is_vector_backend(get_render_type(surf))
 is_vector_backend(rt::RenderType) = rt in (PDF, EPS, SVG)
+
+# no need for resizing screen, since we need to redisplay anyways!
+Base.resize!(screen::Screen, w, h) = nothing
